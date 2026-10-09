@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.0.0",
   "private": true,
-  "description": "A host-only DeepSeek Harness plugin using dsh-h3",
+  "description": "A host-only DeepSeek Harness plugin using dsh-elysia",
   "license": "MIT",
   "exports": {
     ".": "./dist/index.mjs"
@@ -25,8 +25,8 @@
     "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2"
   },
   "dependencies": {
-    "dsh-h3": "workspace:*",
-    "h3": "catalog:"
+    "dsh-elysia": "workspace:*",
+    "elysia": "catalog:"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-host-webserver": "catalog:",

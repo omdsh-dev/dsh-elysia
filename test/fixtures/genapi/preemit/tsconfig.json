@@ -3,7 +3,7 @@
     "module": "Preserve",
     "moduleResolution": "bundler",
     "paths": {
-      "dsh-h3": ["./shim.ts"]
+      "dsh-elysia": ["./shim.ts"]
     },
     "skipLibCheck": true
   }

@@ -1,7 +1,7 @@
 import { defineConfig } from '@genapi/core'
 import pipeline from '@genapi/pipeline'
 import { fetch } from '@genapi/presets'
-import { original } from 'dsh-h3/genapi'
+import { original } from 'dsh-elysia/genapi'
 
 export default defineConfig({
   preset: pipeline(

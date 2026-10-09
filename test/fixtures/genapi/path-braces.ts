@@ -1,6 +1,5 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
 export const server = defineWebServer((app) => {
-  app.get('/api/{id}', defineEventHandler(() => ({ ok: true })))
+  app.get('/api/{id}', () => ({ ok: true }))
 })

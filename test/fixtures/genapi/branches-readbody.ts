@@ -1,22 +1,10 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler, getQuery, readBody } from 'h3'
-
-interface Payload {
-  name: string
-  tags?: string[]
-}
-
-const write = defineEventHandler((event) => {
-  const body = readBody<Payload>(event)
-  return { received: !!body }
-})
-
-const nested = defineEventHandler((event) => {
-  const inner = (): { q?: string } => getQuery<{ q?: string }>(event)
-  return { query: inner().q ?? '' }
-})
+import { defineWebServer } from 'dsh-elysia'
+import { t } from 'elysia'
 
 export const server = defineWebServer((app) => {
-  app.post('/api/readbody-object', write)
-  app.get('/api/nested-query', nested)
+  app.post('/api/readbody-object', ({ body }) => ({ received: !!body }), { body: t.Object({ name: t.String(), tags: t.Optional(t.Array(t.String())) }) })
+  app.get('/api/nested-query', (context) => {
+    const inner = (): string => context.query.q ?? ''
+    return { query: inner() }
+  }, { query: t.Object({ q: t.Optional(t.String()) }) })
 })

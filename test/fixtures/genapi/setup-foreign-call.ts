@@ -1,8 +1,7 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
 const helper = { run: (...args: unknown[]) => args.length }
-const handler = defineEventHandler(() => ({ ok: true }))
+const handler = (): { ok: boolean } => ({ ok: true })
 
 export const server = defineWebServer((_app) => {
   helper.run('/api/helper', handler)

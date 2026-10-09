@@ -1,11 +1,3 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler, getQuery } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
-const handler = defineEventHandler(event => ({
-  first: getQuery<{ a?: string }>(event),
-  second: getQuery<{ b?: string }>(event),
-}))
-
-export const server = defineWebServer((app) => {
-  app.get('/api/query-twice', handler)
-})
+export const server = defineWebServer(app => app.get('/api/query-twice', context => ({ first: context.query.a, second: context.query.b })))

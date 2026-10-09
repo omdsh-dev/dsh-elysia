@@ -1,4 +1,4 @@
-# dsh-h3
+# dsh-elysia
 
 [![npm version][npm-version-src]][npm-version-href]
 [![npm downloads][npm-downloads-src]][npm-downloads-href]
@@ -7,57 +7,59 @@
 [![coverage][coverage-src]][coverage-href]
 [![License][license-src]][license-href]
 
-⚡️ **dsh-h3** is for plugin authors only: it provides [h3](https://github.com/h3js/h3) route services for DeepSeek Harness plugins, with registration and disposal managed by Cordis.
+⚡️ **dsh-elysia** provides native Elysia route services for DeepSeek Harness plugin authors, with registration and disposal managed by Cordis. It runs on the existing Node.js host: no Bun and no additional server.
+
+[中文](<README.md>)
 
 ## 📦 Install
 
 ```sh
-pnpm add dsh-h3 h3
+pnpm add dsh-elysia elysia@1.4.30
 ```
+
+Uses Elysia **1.4.30** and `@elysiajs/node` **1.4.5**. The host must provide `webServer` before activation. This library handles the Node adapter; plugins must not call `listen`.
 
 <details>
 <summary>Are you an AI?</summary>
 
-You can run <code>npx skills add omdsh-dev/dsh-h3 --skill dsh-h3 -y</code> to install the skills!
-
-Remember to ask your owner which <a href="https://github.com/vercel-labs/skills?tab=readme-ov-file#supported-agents">Agents</a> need to be supported (using the <code>--agent</code> parameter of skills) to avoid installing too many default <code>agents</code> directories.
+Run `npx skills add omdsh-dev/dsh-elysia --skill dsh-elysia -y` to install the skill. Ask which agents to support and use `--agent` to avoid installing unnecessary agent directories.
 
 </details>
 
 ## Features
 
-- **Native H3**: middleware, route params, sub-apps, route options, and chaining.
-- **Host routing**: native H3 string paths only, with host `exact`/`prefix` matching inferred internally.
-- **Context and options**: read the Context and options of the current activation, either outside the service or inside an [h3](https://github.com/h3js/h3) handler.
-- **Lifecycle cleanup**: unregister routes through a Cordis effect, and roll back this activation's changes when registration fails.
-- **Reuse the host service**: uses `ctx.webServer`, starts no extra server, and takes no fallback slot.
-- **Client API**: statically generate request functions and types with GenAPI, without executing host code.
-
-> ⚠️ Uses H3 v2. The host must provide `webServer` before the plugin activates.
+- **Native Elysia**: native context, handlers, parameters, lifecycle hooks, `t.Object` validation, and chaining.
+- **Host routing**: string paths infer host exact/prefix matching; Elysia handles actual routing and validation.
+- **Context and options**: read the activation's Cordis Context and configuration from handlers or the service.
+- **Lifecycle cleanup**: dispose routes through Cordis effects and roll back only this activation on registration failure.
+- **Reuse the host**: uses `ctx.webServer`, with no additional port or fallback slot.
+- **Client API**: statically generate request functions and types through `dsh-elysia/genapi`, without executing host code.
 
 ## 🚀 Quick start
 
 ### 1. Define and activate a route service
 
-Define a route service and activate it in the plugin's `apply` function:
+Business handlers are ordinary functions returning JSON objects:
 
 ```ts
 // src/host/server/routes/health.ts
-import { defineEventHandler } from 'h3'
-
-export const health = defineEventHandler(() => ({ status: 'ok' }))
+export function health() {
+  return { status: 'ok' }
+}
 ```
 
 ```ts
-import { defineWebServer } from 'dsh-h3'
 // src/host/server/index.ts
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
+import { t } from 'elysia'
 import { health } from './routes/health'
 
 export const server = defineWebServer((app) => {
   app.get('/api/health', health)
-  app.get('/api/version', defineEventHandler(() => ({ version: '1.0.0' })))
-  app.get('/api/inspect/**', defineEventHandler(event => ({ path: event.url.pathname })))
+  app.get('/api/users/:id', context => ({ id: context.params.id }))
+  app.post('/api/echo', context => ({ message: context.body.message }), {
+    body: t.Object({ message: t.String() }),
+  })
 })
 ```
 
@@ -69,109 +71,88 @@ import { server } from './server'
 export const inject = ['webServer']
 
 export function apply(ctx: Context): void {
-  ctx.effect(() => server(ctx), 'custom-label')
+  ctx.effect(() => server(ctx), 'elysia:routes')
 }
 ```
 
-**Notes:**
-
-* Calling `server(ctx)` returns a disposer (safe to call more than once). When activated through `ctx.effect`, the routes are removed automatically when the plugin unloads.
-* If registration fails, only the routes from this activation are rolled back; existing routes are left untouched.
-
----
+`server(ctx)` returns an idempotent disposer. With `ctx.effect`, routes are removed when the plugin unloads. Registration failure rolls back only the current activation, preserving existing routes.
 
 ### 2. Read the context and options
 
-Pass configuration options or runtime dependencies as the second argument to `server(ctx, options)`:
+Pass configuration or runtime dependencies through `server(ctx, options)`:
 
 ```ts
 // src/host/server/index.ts
-import { defineWebServer } from 'dsh-h3'
-import { status } from './routes/status'
+import { defineWebServer } from 'dsh-elysia'
+import { getServerContext, getServerOptions } from 'dsh-elysia/utils'
 
 export interface Options {
   startedAt: number
 }
 
-export const server = defineWebServer<Options>(app => app.get('/api/status', status))
-```
-
-```ts
-import type { Options } from '../index'
-import { getServerContext, getServerOptions } from 'dsh-h3/utils'
-// src/host/server/routes/status.ts
-import { defineEventHandler } from 'h3'
-
-export const status = defineEventHandler((event) => {
-  const ctx = getServerContext(event)
-  const options = getServerOptions<Options>(event)
-
-  return {
-    port: ctx.webServer.port,
-    uptimeMs: Date.now() - options.startedAt,
-  }
+export const server = defineWebServer<Options>((app) => {
+  app.get('/api/status', (context) => {
+    const ctx = getServerContext(context)
+    const options = getServerOptions<Options>(context)
+    return { port: ctx.webServer.port, uptimeMs: Date.now() - options.startedAt }
+  })
 })
 ```
 
 ```ts
 // src/host/apply.ts
 import type { Context } from '@deepseek-ai/cordis'
-import { getServerContext, getServerOptions } from 'dsh-h3/utils'
+import { getServerContext, getServerOptions } from 'dsh-elysia/utils'
 import { server } from './server'
 
 export const inject = ['webServer']
 
 export function apply(ctx: Context): void {
-  const options = { startedAt: Date.now() }
-  ctx.effect(() => server(ctx, options), 'status:routes')
-
-  // Read the context and options outside the handlers (valid only while the service is active)
-  getServerContext(server) // returns the Context that was passed in
-  getServerOptions(server) // automatically inferred as Options
+  ctx.effect(() => server(ctx, { startedAt: Date.now() }), 'status:routes')
+  getServerContext(server) // the Context passed in
+  getServerOptions(server) // inferred as Options; valid only while active
 }
 ```
 
-> **Isolation**: each activation captures its own `Context` and options. When the same service is activated in multiple hosts, handlers always keep the data of their own activation and are never overwritten by later activations.
+Each activation captures its own Context and options. Native Elysia context carries the activation's `__host_instance` decoration. Pass context directly to the helpers, not a nested event context. Separate handlers can declare `{ __host_instance: HostServiceInstance<Options> }` for the helper input, as shown in the [health handler](<playground/src/host/server/routes/health.ts>).
 
----
-
-### 3. Native Node.js HTTP handlers
-
-Convert Node.js HTTP callbacks explicitly with H3's `fromNodeHandler`:
+### 3. Native request validation
 
 ```ts
-import { defineWebServer } from 'dsh-h3'
-import { fromNodeHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
+import { t } from 'elysia'
 
-const server = defineWebServer((app) => {
-  app.get('/api/text', fromNodeHandler((req, res) => {
-    res.setHeader('content-type', 'text/plain; charset=utf-8')
-    res.end(req.method)
-  }))
+export const server = defineWebServer((app) => {
+  app.post('/api/messages', context => ({
+    message: context.body.message,
+    limit: context.query.limit ?? 10,
+  }), {
+    query: t.Object({ limit: t.Optional(t.Number()) }),
+    body: t.Object({ message: t.String() }),
+  })
 })
 ```
 
-> ⚠️ **Tip**: Node handlers are not converted automatically based on their parameter count. Explicitly converted Node handlers work at runtime, but GenAPI cannot analyse them.
-
----
+Read `context.query`, `context.body`, `context.params`, `context.request.method`, and `context.path`. Use Elysia route schemas for validation and inference; type assertions are not runtime validation.
 
 ## 🛠️ Generate the client API
 
-`dsh-h3/genapi` provides the `original` build stage for GenAPI. It statically analyses the route definitions and H3 handlers in the service entry, and builds the client API directly, **without loading the plugin or executing host code**.
+`dsh-elysia/genapi` provides GenAPI's `original` stage. It statically analyses the service entry, native handlers, and query/body route schemas, **without loading plugins, executing host code, or starting a server**.
 
-### 1. Install the dev dependencies
+### 1. Install dev dependencies
 
 ```sh
 pnpm add -D @genapi/core @genapi/pipeline @genapi/presets
 ```
 
-### 2. Configuration file (`genapi.config.ts`)
+### 2. Configure the pipeline
 
 ```ts
+// genapi.config.ts
 import { defineConfig } from '@genapi/core'
 import pipeline from '@genapi/pipeline'
 import { fetch } from '@genapi/presets'
-import { original } from 'dsh-h3/genapi'
+import { original } from 'dsh-elysia/genapi'
 
 export default defineConfig({
   preset: pipeline(
@@ -180,7 +161,7 @@ export default defineConfig({
     fetch.ts.parser,
     fetch.ts.compiler,
     fetch.ts.generate,
-    fetch.ts.dest
+    fetch.ts.dest,
   ),
   input: './src/host/server/index.ts',
   output: {
@@ -190,117 +171,114 @@ export default defineConfig({
 })
 ```
 
-### 3. Run code generation
+### 3. Generate, call, and verify
 
 ```sh
 pnpm exec genapi
 ```
 
+```ts
+import { postApiEcho } from './apis'
+
+const result = await postApiEcho({ message: 'hello' })
+console.log(result.message)
+```
+
+The generated fetch client uses relative URLs for same-origin clients. Its final option is native `RequestInit`, with no `baseURL` option. Independent Node clients need an existing fetch adapter that resolves relative paths against the host address. Track generated files in version control; do not edit them manually. Regenerate after route/schema changes, then run type checking, generation consistency tests, and builds. The [complete playground](<playground/README.md>) includes query, JSON body, path parameters, helpers, [configuration](<playground/genapi.config.ts>), and the [generated client](<playground/src/client/apis/index.ts>): service definition → generated types → request → JSON response.
+
 ### Rules and limitations
 
-* **Input requirement**: the `input` file must be an entry file that declares `defineWebServer` directly at the top level of the module.
-* **Supported syntax**:
-  * `app.get/post/...`, `app.on('POST', ...)`, and chaining are supported.
-  * Static string paths and simple `:parameter` routes below a static prefix are supported; `'/api/users/:id'` generates a required path parameter.
-  * The only wildcard exception is a terminal `/**` after a non-root, fully static prefix: `'/api/inspect/**'` generates a request function for the fixed endpoint `/api/inspect` only, never a wildcard or child-path client.
-  * Query/Body types are inferred automatically from `getQuery<Query>(event)` or `readBody<Body>(event)`.
-* **Naming**: function names and generated type names are derived from the path and HTTP method (for example, `/api/health` -> `getApiHealth`, `GetApiHealthResponse`). Use `patch.operations` to customize the function name.
-* **Not supported**: dynamic conditions, loops, mounted sub-apps, root `/**`, `/**` after a parameterized prefix, other wildcards or complex regex patterns, Node handlers (including `fromNodeHandler` wrappers), recursive types, and non-JSON contracts (unsupported syntax reports the exact source location).
-
----
+- `input` must declare `defineWebServer` directly at module scope; setup is synchronous.
+- Use static string paths and direct `app.get/post/...` or `app.route('POST', ...)` calls. Chaining is supported.
+- Simple `:parameter` routes below a static prefix generate required path parameters. The only wildcard exception is a terminal `/*` below a non-root, fully static prefix: `/api/inspect/*` generates only the fixed `/api/inspect/` request, preserving the trailing slash (Elysia does not match the slashless `/api/inspect` against that wildcard), not arbitrary child-path clients. Root, parameterized-prefix, and other wildcard forms are unsupported.
+- GenAPI supports `onRequest` hooks that return no response (void), without generating independent hook response contracts. Unanalysed route-local contract-changing hooks (`beforeHandle`, `afterHandle`, `mapResponse`, `onError`, `transform`, `resolve`) are conservatively rejected to avoid disconnecting the JSON client contract from the actual response. Do not depend on generation for other unsupported setup hooks. Native Elysia hooks remain supported at runtime.
+- Ordinary static trailing slashes normalize to the host's canonical path: `/x/` generates `/x`. The wildcard base exception above retains the slash in `/api/inspect/`.
+- The route response schema or handler's awaited return type is aggregated into one HTTP 200 contract, not a complete status-code map. Validation/authorization error responses are not enumerated.
+- Generation currently rejects `t.Transform` schemas, including nested transforms, because wire input types can differ from decoded handler types. Supporting them requires separately modeling both contracts.
+- GenAPI supports default JSON body parsing with no `parse` option. It conservatively rejects every explicit `parse` option, including `parse: 'json'`, rather than inferring wire contracts after custom parsing. This is not a restriction on native Elysia parsing hooks at runtime.
+- Use native `t.Object` query/body schemas and objects that Elysia natively serializes as JSON. Separate handlers can use Elysia `Context` and `Static<typeof schema>` types. Plain string returns are text/plain, not JSON, so GenAPI's JSON preset rejects strings and return unions containing strings. JSON contracts for manually serialized `Response` objects are not currently inferred.
+- Names derive from path and method: `/api/health` → `getApiHealth`, `GetApiHealthResponse`. Customize function names with `patch.operations`.
+- Runtime support does not imply static generation support. Do not depend on generation for conditional/looped registration, sub-apps, complex paths, or non-JSON contracts. Run the generator to confirm support for complex applications; unsupported syntax reports its source location.
 
 ## 💡 Example project
 
-The repository ships a complete [basic example](<playground/README.md>) that shows a plugin organised into a service entry and separate route files, its [GenAPI config](<playground/genapi.config.ts>), and the [generated client API](<playground/src/client/apis/index.ts>), together with real host requests and consistency checks.
-
 ```sh
-# Install and build the example
+# Repository root: install and build the package
 pnpm install
-cd playground
-pnpm genapi
 pnpm build
 
-# Run it (from the repository root; the dsh CLI must be installed)
-dsh web --patch ./cordis.patch.yml
+# Generate and build the playground
+pnpm --dir playground genapi
+pnpm --dir playground typecheck
+pnpm --dir playground build
 ```
 
----
+Load the example into the real host through its Cordis loader [patch](<playground/cordis.patch.yml>). If the host is already running, do not start another server; use the existing host's plugin-loading procedure. For an initial host launch, run `pnpm dev:dsh` from playground (requires the dsh CLI).
 
 ## 📚 API reference
 
 ### `defineWebServer<Options>(setup)`
 
 ```ts
-import type { H3 } from 'h3'
+import type { HostApp, HostService } from 'dsh-elysia'
+import type { AnyElysia } from 'elysia'
 
 function defineWebServer<Options = undefined>(
-  setup: (app: H3) => void | H3,
+  setup: (app: HostApp<Options>) => void | AnyElysia,
 ): HostService<Options>
 ```
 
-Each activation creates a brand-new H3 instance. The `setup` function must run synchronously and return `undefined` or the supplied `app`. It receives the native H3 instance without replacing `app.on`; route registration keeps H3's string paths, handler types, and chaining.
+Each activation creates a fresh Elysia instance. Setup must run synchronously and return undefined or the supplied app's registration chain. Use native routes, handlers, hooks, and `t.Object` schemas. Do not call `listen`. Runtime composition supports only synchronous native `app.use` plugins. Promise plugins, async plugin factories/callbacks, and pending async plugin loads are unsupported and reject activation rather than silently losing their routes. Async request handlers are not affected by this setup-registration restriction. GenAPI still does not support `app.use` plugin composition.
 
-### `getServerContext(server | event)`
+### `getServerContext(server | context)` / `getServerOptions<Options>(server | context)`
 
-Imported from `dsh-h3/utils`. Returns the `Context` object passed in for the current activation.
+Imported from `dsh-elysia/utils`. Read activation data from the service or native Elysia context. Options read from the service are inferred automatically. Both throw TypeError when the service is inactive or the context does not belong to this library.
 
-### `getServerOptions<Options>(server | event)`
-
-Imported from `dsh-h3/utils`. Returns the options object passed in for the current activation. Extraction from `server` supports automatic type inference; extraction from an event requires the options type explicitly.
-
-`server.__host_instance` points to the most recent successfully activated instance. Disposing an older instance does not clear a newer one; after disposing the current instance it does not fall back to an earlier one. When the service is not active, or when an event does not belong to this library, both helpers throw a `TypeError`.
+`server.__host_instance` points to the latest successful activation. Disposing an older instance does not clear a newer one; disposing the current one does not fall back to an earlier instance. Every activation's handlers retain their own Context/options.
 
 ### `original(configRead)`
 
-Imported from `dsh-h3/genapi`. Used inside the GenAPI pipeline to fill in the routes and their type metadata.
+Imported from `dsh-elysia/genapi`. Place it after config and before parser in the pipeline to fill route/type metadata. `output.type` is required.
 
-### H3 string paths and host matching
+### String paths and host matching
 
-Routes accept native H3 string paths only; the internal adapter infers host matching:
-
-| Path declaration | Host-side registration matching |
+| Elysia path | Host matching |
 | --- | --- |
-| `'/api/version'` | Exact match (exact) `/api/version` |
-| `'/api/users/:id'` | Prefix match (prefix) `/api/users`; params are resolved by H3 |
-| `'/api/inspect/**'` | Prefix match (prefix) `/api/inspect`; the wildcard is resolved by H3 |
+| `/api/version` | exact `/api/version` |
+| `/api/users/:id` | prefix `/api/users`; Elysia resolves parameters |
+| `/api/inspect/*` | prefix `/api/inspect`; Elysia resolves the wildcard |
 
-Static paths infer exact matching. Dynamic patterns infer the static prefix before their first dynamic segment, with H3 performing the actual match. Root-level patterns such as `/:id` and `/**` are unsupported. Host prefixes respect path-segment boundaries, so `/api/inspection` does not enter the `/api/inspect` route group.
+Dynamic routes need a static prefix; root `/:id` and `/*` are unsupported. Prefixes respect segment boundaries, so `/api/inspection` does not enter `/api/inspect`. Each host group owns its methods and paths. Unallowed methods return 405 with an `allow` header; HEAD can fall back to GET. An already-owned host `(kind, path)` causes registration failure and rollback of only the current activation.
 
-Each host route group retains method and path ownership: an unmatched method on a matched path returns `405` with an `allow` header, and `HEAD` falls back to `GET`. `all`, `HEAD`, and pattern routes cannot escape their group. Registering a host-owned `(kind, path)` again fails and rolls back only the current activation.
-
-> 🔐 **Security advice**: authentication, authorization, and body size limits are the plugin's own responsibility. Always configure the appropriate H3 middleware for sensitive routes in advance.
-
----
+> 🔐 Plugins are responsible for authentication, authorization, and body size limits. Configure suitable Elysia hooks and validation for sensitive endpoints; schemas do not replace authorization or size limits.
 
 ## 🛠️ Development and contributing
 
 ```sh
-pnpm install     # install dependencies
-pnpm lint        # code style check
-pnpm knip        # unused code/dependency check
-pnpm test --run  # run unit and integration tests
-pnpm typecheck   # TypeScript type check
-pnpm build       # build the project
-pnpm coverage    # run tests, emit coverage reports and enforce the 90% thresholds
+pnpm install
+pnpm lint
+pnpm knip
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm coverage
 ```
 
----
+Coverage thresholds are enforced by configuration. See the [contributing guide](<CONTRIBUTING.md>).
 
 ## 📜️ License
 
-MIT
+MIT; the original [license](<LICENSE.md>) is retained.
 
-<!-- Badges -->
-
-[npm-version-src]: https://img.shields.io/npm/v/dsh-h3?style=flat&colorA=080f12&colorB=1fa669
-[npm-version-href]: https://npmjs.com/package/dsh-h3
-[npm-downloads-src]: https://img.shields.io/npm/dm/dsh-h3?style=flat&colorA=080f12&colorB=1fa669
-[npm-downloads-href]: https://npmjs.com/package/dsh-h3
-[bundle-src]: https://img.shields.io/bundlephobia/minzip/dsh-h3?style=flat&colorA=080f12&colorB=1fa669&label=minzip
-[bundle-href]: https://bundlephobia.com/result?p=dsh-h3
+[npm-version-src]: https://img.shields.io/npm/v/dsh-elysia?style=flat&colorA=080f12&colorB=1fa669
+[npm-version-href]: https://npmjs.com/package/dsh-elysia
+[npm-downloads-src]: https://img.shields.io/npm/dm/dsh-elysia?style=flat&colorA=080f12&colorB=1fa669
+[npm-downloads-href]: https://npmjs.com/package/dsh-elysia
+[bundle-src]: https://img.shields.io/bundlephobia/minzip/dsh-elysia?style=flat&colorA=080f12&colorB=1fa669&label=minzip
+[bundle-href]: https://bundlephobia.com/result?p=dsh-elysia
+[license-src]: https://img.shields.io/github/license/omdsh-dev/dsh-elysia.svg?style=flat&colorA=080f12&colorB=1fa669
+[license-href]: https://github.com/omdsh-dev/dsh-elysia/blob/main/LICENSE.md
 [jsdocs-src]: https://img.shields.io/badge/jsdocs-reference-080f12?style=flat&colorA=080f12&colorB=1fa669
-[jsdocs-href]: https://www.jsdocs.io/package/dsh-h3
-[coverage-src]: https://codecov.io/gh/omdsh-dev/dsh-h3/graph/badge.svg
-[coverage-href]: https://codecov.io/gh/omdsh-dev/dsh-h3
-[license-src]: https://img.shields.io/github/license/omdsh-dev/dsh-h3.svg?style=flat&colorA=080f12&colorB=1fa669
-[license-href]: https://github.com/omdsh-dev/dsh-h3/blob/main/LICENSE
+[jsdocs-href]: https://www.jsdocs.io/package/dsh-elysia
+[coverage-src]: https://codecov.io/gh/omdsh-dev/dsh-elysia/graph/badge.svg
+[coverage-href]: https://codecov.io/gh/omdsh-dev/dsh-elysia

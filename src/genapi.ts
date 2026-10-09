@@ -55,7 +55,7 @@ function typeName(...parts: string[]): string {
 
 export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.ConfigRead {
   if (!configRead.inputs.uri)
-    throw new TypeError('dsh-h3/genapi: input must be a local service entry file')
+    throw new TypeError('dsh-elysia/genapi: input must be a local service entry file')
   const entry = resolve(configRead.inputs.uri)
   const configFile = ts.findConfigFile(dirname(entry), ts.sys.fileExists)
   let options: ts.CompilerOptions = { strict: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.Preserve, moduleResolution: ts.ModuleResolutionKind.Bundler, skipLibCheck: true }
@@ -71,21 +71,21 @@ export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.Config
   const program = ts.createProgram([entry], options)
   const file = program.getSourceFile(entry)
   if (!file)
-    throw new Error(`dsh-h3/genapi: cannot read service entry ${entry}`)
+    throw new Error(`dsh-elysia/genapi: cannot read service entry ${entry}`)
   const diagnostics = ts.getPreEmitDiagnostics(program)
   if (diagnostics.length)
     throw new Error(ts.formatDiagnostics(diagnostics, diagnosticHost))
   const checker = program.getTypeChecker()
   const typeScope = configRead.graphs.scopes.type
   if (!typeScope)
-    throw new TypeError('dsh-h3/genapi: a TypeScript type output is required')
+    throw new TypeError('dsh-elysia/genapi: a TypeScript type output is required')
   const paths: Record<string, Record<string, unknown>> = {}
   const declared = new Set<string>()
 
   function fail(node: ts.Node, message: string): never {
     const source = node.getSourceFile()
     const { line, character } = source.getLineAndCharacterOfPosition(node.getStart())
-    throw new TypeError(`dsh-h3/genapi: ${source.fileName}:${line + 1}:${character + 1}: ${message}`)
+    throw new TypeError(`dsh-elysia/genapi: ${source.fileName}:${line + 1}:${character + 1}: ${message}`)
   }
 
   function symbolOf(node: ts.Node): ts.Symbol | undefined {
@@ -180,19 +180,13 @@ export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.Config
     return { $ref: `#/definitions/${name}` }
   }
 
-  function handlerOf(node: ts.Expression): ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration {
-    let value = valueOf(node)
-    if (ts.isCallExpression(value) && ['defineEventHandler', 'defineHandler', 'eventHandler'].includes(nameOf(value.expression) ?? '')) {
-      value = valueOf(value.arguments[0])
-      if (ts.isObjectLiteralExpression(value)) {
-        const handler = value.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText() === 'handler')
-        if (handler && ts.isPropertyAssignment(handler))
-          value = valueOf(handler.initializer)
-      }
-    }
+  function handlerOf(node: ts.Expression): ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | ts.ObjectLiteralExpression {
+    const value = valueOf(node)
+    if (ts.isObjectLiteralExpression(value))
+      return value
     if ((ts.isArrowFunction(value) || ts.isFunctionExpression(value) || ts.isFunctionDeclaration(value)) && value.body && value.parameters.length < 2)
       return value
-    return fail(node, 'use a statically resolvable H3 event handler, not a Node callback or sub-application')
+    return fail(node, 'use a statically resolvable Elysia handler or JSON object, not a Node callback or sub-application')
   }
 
   function routeOf(route: ts.Expression): { path: string, parameters: Array<Record<string, unknown>> } {
@@ -202,9 +196,11 @@ export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.Config
     if (/[{}]/.test(path))
       return fail(route, 'only static paths and simple :parameter segments below a static prefix are supported')
     path = new URL(path, 'http://localhost').pathname
-    // ponytail: terminal /** exposes only the static base contract; model descendant paths when needed.
-    if (path.endsWith('/**') && path !== '/**' && !path.endsWith('//**') && !path.includes(':'))
-      path = path.slice(0, -3)
+    // ponytail: terminal /* exposes only its reachable trailing-slash endpoint; model descendant paths when needed.
+    if (path.endsWith('/*') && path !== '/*' && !path.endsWith('//*') && !path.includes(':'))
+      path = path.slice(0, -1)
+    else if (path !== '/' && !path.includes(':'))
+      path = path.replace(/\/$/, '')
     const parameters: Array<Record<string, unknown>> = []
     if (/^\/:|[*()+]/.test(path))
       return fail(route, 'only static paths and simple :parameter segments below a static prefix are supported')
@@ -219,7 +215,129 @@ export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.Config
     return { path, parameters }
   }
 
-  function register(call: ts.CallExpression, method: string, route: ts.Expression, handler: ts.Expression): void {
+  function schemaType(routeOptions: ts.ObjectLiteralExpression | undefined, kind: string): ts.Type | undefined {
+    if (!routeOptions)
+      return
+    const field = checker.getPropertyOfType(checker.getTypeAtLocation(routeOptions), kind)
+    if (!field)
+      return
+    const schema = checker.getTypeOfSymbolAtLocation(field, routeOptions)
+    function rejectTransforms(type: ts.Type, seen = new Set<ts.Type>()): void {
+      if (seen.has(type))
+        return
+      const nested = new Set(seen).add(type)
+      for (const property of checker.getPropertiesOfType(type)) {
+        if (property.getName().startsWith('__@TransformKind@'))
+          fail(routeOptions!, 'transform schemas require separate wire contracts and are not supported')
+      }
+      if (type.flags & ts.TypeFlags.Object) {
+        for (const argument of checker.getTypeArguments(type as ts.TypeReference))
+          rejectTransforms(argument, nested)
+      }
+      if (type.isUnionOrIntersection())
+        type.types.forEach(part => rejectTransforms(part, nested))
+      if (!checker.getPropertyOfType(type, 'static') && !checker.isArrayType(type) && !checker.isTupleType(type))
+        checker.getPropertiesOfType(type).forEach(property => rejectTransforms(checker.getTypeOfSymbolAtLocation(property, routeOptions!), nested))
+    }
+    rejectTransforms(schema)
+    const staticType = checker.getPropertyOfType(schema, 'static')
+    if (!staticType)
+      return fail(routeOptions, 'route schemas must be concrete Elysia JSON schemas, not model names or response status maps')
+    const type = checker.getTypeOfSymbolAtLocation(staticType, routeOptions)
+    function validate(type: ts.Type, seen = new Set<ts.Type>()): void {
+      if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+        fail(routeOptions!, 'route schemas must be concrete JSON types; unsupported schemas cannot generate unknown')
+      if (seen.has(type) || type.getSymbol()?.getName() === 'Date')
+        return
+      const nested = new Set(seen).add(type)
+      if (type.isUnionOrIntersection()) {
+        type.types.forEach(part => validate(part, nested))
+      }
+      else if (checker.isArrayType(type) || checker.isTupleType(type)) {
+        checker.getTypeArguments(type as ts.TypeReference).forEach(part => validate(part, nested))
+      }
+      else if (type.flags & ts.TypeFlags.Object) {
+        checker.getPropertiesOfType(type).forEach(property => validate(checker.getTypeOfSymbolAtLocation(property, routeOptions!), nested))
+        for (const kind of [ts.IndexKind.String, ts.IndexKind.Number]) {
+          const index = checker.getIndexTypeOfType(type, kind)
+          if (index)
+            validate(index, nested)
+        }
+      }
+    }
+    validate(type)
+    typeValue(type, routeOptions)
+    return type
+  }
+
+  function contextReads(fn: ReturnType<typeof handlerOf>): Set<string> {
+    const context = !ts.isObjectLiteralExpression(fn) && fn.parameters[0]
+    const used = new Set<string>()
+    if (context) {
+      if (ts.isObjectBindingPattern(context.name)) {
+        for (const element of context.name.elements)
+          used.add((element.propertyName ?? element.name).getText())
+      }
+      else if (ts.isIdentifier(context.name)) {
+        const symbol = checker.getSymbolAtLocation(context.name)
+        const visit = (node: ts.Node): void => {
+          if (ts.isPropertyAccessExpression(node) && checker.getSymbolAtLocation(node.expression) === symbol)
+            used.add(node.name.text)
+          if (ts.isElementAccessExpression(node) && checker.getSymbolAtLocation(node.expression) === symbol && node.argumentExpression && ts.isStringLiteral(node.argumentExpression))
+            used.add(node.argumentExpression.text)
+          if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer && checker.getSymbolAtLocation(node.initializer) === symbol) {
+            for (const element of node.name.elements)
+              used.add((element.propertyName ?? element.name).getText())
+          }
+          ts.forEachChild(node, visit)
+        }
+        visit(fn)
+      }
+    }
+    return used
+  }
+
+  function isNamedObject(type: ts.Type): boolean {
+    return !!(type.flags & ts.TypeFlags.Object) && !checker.isArrayType(type) && !checker.isTupleType(type) && !checker.getIndexTypeOfType(type, ts.IndexKind.String) && !checker.getIndexTypeOfType(type, ts.IndexKind.Number)
+  }
+
+  function emitRequest(name: string, kind: string, type: ts.Type, handler: ts.Expression, parameters: Array<Record<string, unknown>>): void {
+    if (kind === 'query') {
+      for (const field of checker.getPropertiesOfType(type)) {
+        const ref = alias(typeName(name, 'query', field.getName()), checker.getTypeOfSymbolAtLocation(field, handler), handler)
+        parameters.push({ ...ref, name: field.getName(), in: 'query', required: !(field.flags & ts.SymbolFlags.Optional) })
+      }
+      return
+    }
+    const properties = checker.getPropertiesOfType(type).map(field => ({ name: field.getName(), type: typeValue(checker.getTypeOfSymbolAtLocation(field, handler), handler), required: !(field.flags & ts.SymbolFlags.Optional) }))
+    const body = declare(handler, typeName(name, 'body'))
+    typeScope.interfaces.push({ name: body, properties, export: true })
+    parameters.push({ name: 'body', in: 'body', required: true, schema: { $ref: `#/definitions/${body}` } })
+  }
+
+  function requestContracts(name: string, handler: ts.Expression, fn: ReturnType<typeof handlerOf>, routeOptions: ts.ObjectLiteralExpression | undefined, parameters: Array<Record<string, unknown>>): void {
+    const context = !ts.isObjectLiteralExpression(fn) && fn.parameters[0]
+    const contextType = context && checker.getTypeAtLocation(context)
+    const used = contextReads(fn)
+    for (const kind of ['query', 'body']) {
+      let type = schemaType(routeOptions, kind)
+      if (!type && contextType && used.has(kind)) {
+        const property = checker.getPropertyOfType(contextType, kind)
+        type = property && checker.getTypeOfSymbolAtLocation(property, context!)
+      }
+      if (!type) {
+        if (used.has(kind))
+          fail(context || handler, 'query/body requires an explicit typed context or route schema')
+        continue
+      }
+      type = checker.getNonNullableType(type)
+      if (!isNamedObject(type))
+        return fail(context || handler, `${kind} requires an object contract with named fields`)
+      emitRequest(name, kind, type, handler, parameters)
+    }
+  }
+
+  function register(call: ts.CallExpression, method: string, route: ts.Expression, handler: ts.Expression, options?: ts.Expression): void {
     if (!methods.has(method))
       return fail(call, 'declare a specific OpenAPI HTTP method instead of all/connect/trace/query')
     const { path, parameters } = routeOf(route)
@@ -229,45 +347,24 @@ export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.Config
     const name = typeName(method, path)
     const fn = handlerOf(handler)
     const signature = checker.getTypeAtLocation(handler).getCallSignatures()[0]
-    if (!signature)
+    if (!ts.isObjectLiteralExpression(fn) && !signature)
       return fail(handler, 'handler must be callable')
-    const response = checker.getReturnTypeOfSignature(signature)
-    const schema = alias(typeName(name, 'response'), checker.getAwaitedType(response) ?? response, handler)
-    const reads = new Set<string>()
-    function requestOf(node: ts.CallExpression, kind: string): void {
-      if (reads.has(kind))
-        return fail(node, 'use one getQuery/readBody contract per handler')
-      reads.add(kind)
-      let typed: ts.Node = node
-      while (ts.isAwaitExpression(typed.parent) || ts.isParenthesizedExpression(typed.parent) || ts.isAsExpression(typed.parent) || ts.isTypeAssertionExpression(typed.parent))
-        typed = typed.parent
-      const inferred = node.typeArguments?.[0] && typed === node ? checker.getTypeFromTypeNode(node.typeArguments[0]) : checker.getTypeAtLocation(typed)
-      const type = checker.getNonNullableType(checker.getAwaitedType(inferred) ?? inferred)
-      if (kind === 'getQuery') {
-        for (const field of checker.getPropertiesOfType(type)) {
-          const ref = alias(typeName(name, 'query', field.getName()), checker.getTypeOfSymbolAtLocation(field, node), node)
-          parameters.push({ ...ref, name: field.getName(), in: 'query', required: !(field.flags & ts.SymbolFlags.Optional) })
-        }
-        return
-      }
-      if (!(type.flags & ts.TypeFlags.Object) || checker.isArrayType(type) || checker.isTupleType(type) || checker.getIndexTypeOfType(type, ts.IndexKind.String))
-        return fail(node, 'readBody requires an object contract with named fields')
-      const properties = checker.getPropertiesOfType(type).map(field => ({ name: field.getName(), type: typeValue(checker.getTypeOfSymbolAtLocation(field, node), node), required: !(field.flags & ts.SymbolFlags.Optional) }))
-      const body = declare(node, typeName(name, 'body'))
-      typeScope.interfaces.push({ name: body, properties, export: true })
-      parameters.push({ name: 'body', in: 'body', required: true, schema: { $ref: `#/definitions/${body}` } })
-    }
-    function visit(node: ts.Node): void {
-      if (ts.isFunctionLike(node) && node !== fn)
-        return
-      if (ts.isCallExpression(node)) {
-        const kind = nameOf(node.expression)
-        if (kind === 'getQuery' || kind === 'readBody')
-          requestOf(node, kind)
-      }
-      ts.forEachChild(node, visit)
-    }
-    visit(fn)
+    const response = signature ? checker.getReturnTypeOfSignature(signature) : checker.getTypeAtLocation(handler)
+    const value = options && valueOf(options)
+    if (value && !ts.isObjectLiteralExpression(value))
+      return fail(options!, 'route options must be a static object')
+    const routeOptions = value as ts.ObjectLiteralExpression | undefined
+    if (routeOptions && checker.getPropertyOfType(checker.getTypeAtLocation(routeOptions), 'parse'))
+      return fail(routeOptions, 'explicit parsers are not supported by the JSON client contract')
+    if (routeOptions && ['beforeHandle', 'afterHandle', 'mapResponse', 'error', 'onError', 'transform', 'resolve', 'derive', 'onRequest', 'afterResponse'].some(name => checker.getPropertyOfType(checker.getTypeAtLocation(routeOptions), name)))
+      return fail(routeOptions, 'route-local lifecycle hooks are not supported by the JSON client contract')
+    const responseType = checker.getAwaitedType(response) ?? response
+    const responseParts = responseType.isUnion() ? responseType.types : [responseType]
+    if (responseParts.some(part => !!(part.flags & ts.TypeFlags.StringLike)))
+      return fail(handler, 'plain string responses are not supported by the JSON client contract')
+    typeValue(responseType, handler)
+    const schema = alias(typeName(name, 'response'), schemaType(routeOptions, 'response') ?? responseType, handler)
+    requestContracts(name, handler, fn, routeOptions, parameters)
     paths[path][method] = { parameters, responses: { 200: { description: `${method.toUpperCase()} ${path}`, schema } } }
   }
 
@@ -288,16 +385,24 @@ export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.Config
         visit(receiver)
       const method = expression.expression.name.text
       if (method === 'use')
+        return fail(expression, 'plugins and mounted route registration are not supported; declare routes directly without executing plugins')
+      if (method === 'onRequest') {
+        const hook = expression.arguments[0] && checker.getTypeAtLocation(expression.arguments[0]).getCallSignatures()[0]
+        const result = hook && checker.getReturnTypeOfSignature(hook)
+        const awaited = result && (checker.getAwaitedType(result) ?? result)
+        if (!awaited || !(awaited.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never)))
+          return fail(expression, 'onRequest hooks that can return a response are not supported')
         return
-      if (method === 'on') {
+      }
+      if (method === 'route') {
         if (expression.arguments.length < 3)
-          return fail(expression, 'app.on requires method, path and handler')
-        register(expression, textOf(expression.arguments[0]).toLowerCase(), expression.arguments[1], expression.arguments[2])
+          return fail(expression, 'app.route requires method, path and handler')
+        register(expression, textOf(expression.arguments[0]).toLowerCase(), expression.arguments[1], expression.arguments[2], expression.arguments[3])
       }
       else {
         if (expression.arguments.length < 2)
           return fail(expression, 'route declarations require path and handler')
-        register(expression, method, expression.arguments[0], expression.arguments[1])
+        register(expression, method, expression.arguments[0], expression.arguments[1], expression.arguments[2])
       }
     }
     function statementOf(statement: ts.Statement): void {
@@ -351,7 +456,7 @@ export function original(configRead: ApiPipeline.ConfigRead): ApiPipeline.Config
   }
   scan(file)
   if (!Object.keys(paths).length)
-    throw new TypeError('dsh-h3/genapi: no static defineWebServer routes found in input')
+    throw new TypeError('dsh-elysia/genapi: no static defineWebServer routes found in input')
   configRead.source = { swagger: '2.0', info: { title: basename(entry, '.ts'), version: '0.0.0' }, paths, definitions: {} }
   return configRead
 }

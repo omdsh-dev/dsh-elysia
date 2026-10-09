@@ -1,9 +1,7 @@
-import { defineEventHandler } from 'h3'
-
-export const namedHandler = defineEventHandler(() => ({ named: true }))
+export const namedHandler = (): { named: boolean } => ({ named: true })
 
 export function functionHandler(): { fromFunction: boolean } {
   return { fromFunction: true }
 }
 
-export default defineEventHandler(() => ({ fromDefault: true }))
+export default (): { fromDefault: boolean } => ({ fromDefault: true })

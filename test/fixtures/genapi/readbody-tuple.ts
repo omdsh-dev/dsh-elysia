@@ -1,11 +1,5 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler, readBody } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
+import { t } from 'elysia'
 
-const handler = defineEventHandler(async (event) => {
-  const body = await readBody<[string, number]>(event)
-  return { head: body?.[0] ?? '' }
-})
-
-export const server = defineWebServer((app) => {
-  app.post('/api/readbody-tuple', handler)
-})
+const handler = ({ body }: { body: [string, number] }): { value: string } => ({ value: body[0] })
+export const server = defineWebServer(app => app.post('/api/readbody-tuple', handler, { body: t.Tuple([t.String(), t.Number()]) }))

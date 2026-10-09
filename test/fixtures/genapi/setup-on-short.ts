@@ -1,9 +1,5 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
-const handler = defineEventHandler(() => ({ ok: true }))
-const onArguments: [string, typeof handler] = ['/api/on-short', handler]
-
-export const server = defineWebServer((app) => {
-  app.on('get', ...onArguments)
-})
+const handler = (): { ok: boolean } => ({ ok: true })
+const routeArguments: ['/api/route-short', typeof handler] = ['/api/route-short', handler]
+export const server = defineWebServer(app => app.route('GET', ...routeArguments))

@@ -1,4 +1,4 @@
-import { defineWebServer } from 'dsh-h3'
+import { defineWebServer } from 'dsh-elysia'
 
 const notCallable = (() => ({ ok: true })) as never
 

@@ -1,45 +1,46 @@
-import { defineEventHandler, getQuery, getRouterParam, readBody } from 'h3'
+import type { Context, Static } from 'elysia'
+import { t } from 'elysia'
 
-interface EchoQuery {
-  pretty?: boolean
-  limit?: number
-}
+export const echoQuery = t.Object({
+  pretty: t.Optional(t.Boolean()),
+  limit: t.Optional(t.Number()),
+})
 
-interface EchoBody {
-  message: string
-  tags?: string[]
-  metadata?: Record<string, string>
-}
+export const echoBody = t.Object({
+  message: t.String(),
+  tags: t.Optional(t.Array(t.String())),
+  metadata: t.Optional(t.Record(t.String(), t.String())),
+})
 
-interface EchoResult {
+type EchoContext = Context<{
+  query: Static<typeof echoQuery>
+  body: Static<typeof echoBody>
+  params: { channel: string }
+}>
+
+export function readEcho(context: Omit<EchoContext, 'body'>): {
   channel: string
   method: string
   pretty: boolean
   limit: number
-  body: EchoBody
-  query: EchoQuery
+  query: Static<typeof echoQuery>
+} {
+  return {
+    channel: context.params.channel,
+    method: context.request.method,
+    pretty: context.query.pretty ?? false,
+    limit: context.query.limit ?? 10,
+    query: context.query,
+  }
 }
 
-export const readEcho = defineEventHandler((event) => {
-  const query = getQuery<EchoQuery>(event)
+export function writeEcho(context: EchoContext): ReturnType<typeof readEcho> & { body: Static<typeof echoBody> } {
   return {
-    channel: getRouterParam(event, 'channel') ?? '',
-    method: event.req.method,
-    pretty: query.pretty ?? false,
-    limit: query.limit ?? 10,
-    query,
+    channel: context.params.channel,
+    method: context.request.method,
+    pretty: context.query.pretty ?? false,
+    limit: context.query.limit ?? 10,
+    body: context.body,
+    query: context.query,
   }
-})
-
-export const writeEcho = defineEventHandler<{ body: EchoBody }, Promise<EchoResult>>(async (event) => {
-  const body = await readBody(event)
-  const query = getQuery<EchoQuery>(event)
-  return {
-    channel: getRouterParam(event, 'channel') ?? '',
-    method: event.req.method,
-    pretty: query.pretty ?? false,
-    limit: query.limit ?? 10,
-    body: body ?? { message: '' },
-    query,
-  }
-})
+}

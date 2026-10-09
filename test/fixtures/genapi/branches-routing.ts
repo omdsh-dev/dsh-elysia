@@ -1,7 +1,6 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
-const handler = defineEventHandler(() => ({ ok: true }))
+const handler = (): { ok: boolean } => ({ ok: true })
 
 export const chained = defineWebServer((app) => {
   app.get('/api/chain-a', handler).get('/api/chain-b', handler)
@@ -38,6 +37,6 @@ export default defineWebServer((app) => {
   app.get('/api/./normalized', handler)
   app.get('/api/plain-slash/', handler)
   app.get(`/api/template`, handler)
-  app.on('get', '/api/on-explicit', handler)
-  app.use(() => ({ middleware: true }))
+  app.route('GET', '/api/on-explicit', handler)
+  app.onRequest(() => undefined)
 })

@@ -1,3 +1,3 @@
 - insert:
-    - id: h3-basic
+    - id: elysia-basic
       name: ./dist/index.mjs

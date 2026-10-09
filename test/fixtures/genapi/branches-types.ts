@@ -1,5 +1,4 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
 interface Payload {
   flag: boolean
@@ -19,22 +18,24 @@ interface Payload {
   maybe?: string
 }
 
-const handler = defineEventHandler((): Payload => ({
-  flag: true,
-  nothing: null,
-  at: new Date(),
-  list: [],
-  pair: ['a'],
-  rest: ['a'],
-  map: {},
-  counts: {},
-  union: 'a',
-  both: { a: 'a', b: 1 },
-  kind: 'exact',
-  level: 1,
-  extra: undefined,
-  nested: { deep: { value: true } },
-}))
+function handler(): Payload {
+  return {
+    flag: true,
+    nothing: null,
+    at: new Date(),
+    list: [],
+    pair: ['a'],
+    rest: ['a'],
+    map: {},
+    counts: {},
+    union: 'a',
+    both: { a: 'a', b: 1 },
+    kind: 'exact',
+    level: 1,
+    extra: undefined,
+    nested: { deep: { value: true } },
+  }
+}
 
 export const server = defineWebServer((app) => {
   app.get('/api/types', handler)

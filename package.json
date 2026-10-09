@@ -1,17 +1,17 @@
 {
-  "name": "dsh-h3",
+  "name": "dsh-elysia",
   "type": "module",
   "version": "0.2.0",
   "packageManager": "pnpm@12.8.1",
-  "description": "H3 route services for the DeepSeek Harness WebServer and Cordis lifecycle",
+  "description": "Elysia route services for the DeepSeek Harness WebServer and Cordis lifecycle",
   "author": "Anthony Fu <anthonyfu117@hotmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/omdsh-dev/dsh-h3#readme",
+  "homepage": "https://github.com/omdsh-dev/dsh-elysia#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/omdsh-dev/dsh-h3.git"
+    "url": "git+https://github.com/omdsh-dev/dsh-elysia.git"
   },
-  "bugs": "https://github.com/omdsh-dev/dsh-h3/issues",
+  "bugs": "https://github.com/omdsh-dev/dsh-elysia/issues",
   "keywords": [],
   "sideEffects": false,
   "exports": {
@@ -67,7 +67,9 @@
     }
   },
   "dependencies": {
-    "h3": "catalog:"
+    "@elysiajs/node": "catalog:",
+    "elysia": "catalog:",
+    "srvx": "catalog:"
   },
   "devDependencies": {
     "@antfu/eslint-config": "catalog:cli",

@@ -23,8 +23,9 @@ export async function getApiServer(config?: RequestInit) {
 }
 
 /** @method get */
-export async function getApiInspect(config?: RequestInit) {
-  const response = await fetch("/api/inspect", {
+export async function getApiInspect(query?: Types.GetApiInspectQuery, config?: RequestInit) {
+  const querystr = new URLSearchParams(Object.entries(query || {}));
+  const response = await fetch(`/api/inspect?${querystr}`, {
     ...config,
   });
   return response.json() as Promise<Types.GetApiInspectResponse>;

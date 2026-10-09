@@ -1,11 +1,5 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler, readBody } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
+import { t } from 'elysia'
 
-const handler = defineEventHandler(async (event) => {
-  const body = await readBody<Record<string, string>>(event)
-  return { keys: body ? Object.keys(body).length : 0 }
-})
-
-export const server = defineWebServer((app) => {
-  app.post('/api/readbody-index', handler)
-})
+const handler = ({ body }: { body: Record<string, string> }): { value: number } => ({ value: Object.keys(body).length })
+export const server = defineWebServer(app => app.post('/api/readbody-index', handler, { body: t.Record(t.String(), t.String()) }))

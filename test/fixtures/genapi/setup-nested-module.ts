@@ -1,9 +1,8 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
 declare const enabled: boolean
 
-const handler = defineEventHandler(() => ({ ok: true }))
+const handler = (): { ok: boolean } => ({ ok: true })
 
 if (enabled) {
   const nested = defineWebServer((app) => {

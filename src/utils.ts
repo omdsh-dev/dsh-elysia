@@ -1,20 +1,17 @@
-import type { Context } from '@deepseek-ai/cordis'
-import type { H3Event } from 'h3'
-import type { HostService, HostServiceInstance } from './index'
+import type { Context as CordisContext } from '@deepseek-ai/cordis'
+import type { HostContext, HostService, HostServiceInstance } from './index'
 
-export function getServerContext<Options>(source: HostService<Options> | H3Event): Context {
-  return instanceOf(source).context
+export function getServerContext<Context = CordisContext>(source: HostService<any> | HostContext<unknown>): Context {
+  return instanceOf(source).context as Context
 }
 
-export function getServerOptions<Options>(source: HostService<Options> | H3Event): Options {
+export function getServerOptions<Options>(source: HostService<Options> | HostContext<Options>): Options {
   return instanceOf(source).options
 }
 
-function instanceOf<Options>(source: HostService<Options> | H3Event): HostServiceInstance<Options> {
-  const instance = typeof source === 'function'
-    ? source.__host_instance
-    : source?.context?.__host_instance as HostServiceInstance<Options> | undefined
+function instanceOf<Options>(source: HostService<Options> | HostContext<Options>): HostServiceInstance<Options> {
+  const instance = source?.__host_instance
   if (!instance)
-    throw new TypeError('dsh-h3: service is not active or event does not belong to a host service')
+    throw new TypeError('dsh-elysia: service is not active or context does not belong to a host service')
   return instance
 }

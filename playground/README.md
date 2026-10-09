@@ -1,132 +1,96 @@
-# DSH 基础插件示例 (Basic Example)
+# DSH 原生 Elysia 插件示例
 
-本示例展示了如何使用 [`dsh-h3`](../../README.md) 构建一个**纯宿主插件**。插件内的路由直接挂载并运行在宿主的 WebServer 上，无需启动独立的 HTTP 服务器或占用额外端口。
+本示例使用 [dsh-elysia](<../README.md>) 构建纯宿主插件。路由运行在现有 Node.js 宿主 WebServer 上，不需要 Bun、不另起服务器或占用端口。
 
----
-
-## 📁 项目结构
+## 项目结构
 
 ```text
-genapi.config.ts          # GenAPI 配置文件（静态读取服务器入口并生成客户端 API）
-cordis.patch.yml          # DSH Loader patch（向真实 Profile 注入编译后的插件）
-tsdown.config.ts          # 插件构建配置（仅打包宿主代码，保留外部依赖）
-src/
-├── index.ts              # 插件主入口（导出 inject 与 apply，托管服务激活与生命周期）
-├── host/
-│   └── server/
-│       ├── index.ts      # 服务器入口（通过 defineWebServer 注册路由与配置项）
-│       └── routes/       # 业务路由目录
-│           ├── health.ts # 健康检查路由（读取服务选项，返回运行时间）
-│           ├── server.ts # 宿主信息路由（读取 Context，返回监听端口）
-│           └── inspect.ts# 请求诊断路由（返回方法、路径和 Query）
-└── client/
-    └── apis/             # GenAPI 静态生成的客户端文件（提交至 Git，不可手动修改）
-        ├── index.ts      # 生成的请求 API 函数
-        └── index.type.ts # 生成的响应类型定义
-
+genapi.config.ts           # dsh-elysia/genapi 静态生成配置
+cordis.patch.yml           # Cordis loader patch
+src/index.ts              # inject/apply 与 effect 生命周期
+src/host/server/index.ts  # 原生路由与 query/body schemas
+src/host/server/routes/
+  health.ts               # getServerOptions 与 uptime
+  server.ts               # getServerContext 与宿主端口
+  inspect.ts              # native request/path/query
+  echo.ts                 # native params/query/body、JSON return
+src/client/apis/
+  index.ts                # 生成请求函数；不可手工修改
+  index.type.ts           # 生成类型；不可手工修改
 ```
 
-> 💡 **设计设计原则**：路由处理器统一采用 H3 的 `defineEventHandler`。业务文件仅关注处理逻辑，具体的路由注册与生命周期则交给服务入口与插件主入口集中管理。
+业务处理器是普通函数。query/body 使用 Elysia `t.Object` schemas，在注册时进行真实验证；独立处理器用 `Context` 与 `Static<typeof schema>` 表达同一合同。helper 接受原生 context 的 `__host_instance` 装饰。
 
----
+## 构建与生成
 
-## 🛠️ 构建指南
-
-由于本示例通过 `workspace:*` 依赖主包，必须先在**仓库根目录**完成主包构建：
+从仓库根目录执行：
 
 ```sh
-# 1. 安装项目依赖并构建主包
 pnpm install
 pnpm build
-
-# 2. 生成示例插件的客户端 API
-pnpm genapi
-
-# 3. 编译插件并进行类型检查
-pnpm build
-pnpm typecheck
-
+pnpm --dir playground genapi
+pnpm --dir playground typecheck
+pnpm --dir playground build
 ```
 
-> 📌 **产物说明**：插件的最终打包入口为 `./dist/index.mjs`。打包产物仅包含宿主端代码，不包含客户端请求代码。
+插件产物为 `playground/dist/index.mjs`，只打包宿主代码。GenAPI 通过 `dsh-elysia/genapi` 分析服务入口，不执行处理器、不加载插件、不启动 DSH。生成文件纳入版本控制，schema 变更后重新生成，不能手工修补输出。
 
----
-
-## ⚡ 生成与调用客户端 API
-
-### 1. 代码生成
-
-在仓库根目录或示例目录下执行生成命令（生成过程**不启动** DSH，亦**不执行**宿主路由代码）：
-
-```sh
-pnpm genapi
-# 或在当前示例目录下：
-pnpm genapi
-
-```
-
-### 2. 客户端调用示例
-
-在同源客户端（如前端应用）中调用：
+## 客户端调用
 
 ```ts
-import { getApiHealth, getApiInspect, getApiServer } from './apis'
+import { getApiEchoChannel, getApiHealth, getApiInspect, getApiServer, postApiEchoChannel } from './apis'
 
-// 调用自动生成的客户端函数
 const health = await getApiHealth()
-const server = await getApiServer()
-const request = await getApiInspect({ query: { query: '1' } })
+const host = await getApiServer()
+const request = await getApiInspect({ query: '1' })
+const echo = await getApiEchoChannel({ channel: 'demo' }, { pretty: true, limit: 2 })
+const written = await postApiEchoChannel(
+  { channel: 'demo' },
+  { message: 'hello', tags: ['example'], metadata: { source: 'client' } },
+  { limit: 2 },
+)
 
-console.log(health.uptimeMs, server.port, request.query)
+console.log(health.uptimeMs, host.port, request.query, echo.channel, written.body.message)
 ```
 
-> 💡 **跨域/独立服务调用**：若在 Node.js 或异构客户端中调用，传入 `baseURL` 选项即可（例如 `{ baseURL: 'http://127.0.0.1:3080' }`）。
+生成的 fetch 客户端使用相对 URL，适合已有同源客户端；末尾参数是原生 `RequestInit`，不支持 `baseURL`。独立 Node 客户端需要现有 fetch 适配层将相对路径解析到宿主地址，参见仓库端到端测试。完整链路为 route schema 验证 → native context.query/body → JSON object 返回 → GenAPI 类型 → 生成客户端 → 宿主 JSON 响应。
 
-### 3. 生成规则与维护
+`/api/inspect` 是 exact 路径；`/api/echo/:channel` 演示 native params 和必填客户端路径参数，不枚举任意通配符子路径。
 
-* **支持的路由子集**：GenAPI 支持静态字符串和静态前缀下的简单 `:parameter` 路由。唯一的通配符例外是非根、完全静态前缀后的末尾 `/**`：本示例的 `/api/inspect/**` 仅生成请求固定端点 `/api/inspect` 的 `getApiInspect`，不会生成通配符或任意子路径客户端。根级 `/**`、带参数前缀后的 `/**`、单星号及中间位置的 `**` 均不支持。
-* **版本控制与检查**：生成的 API 文件需提交至 Git 仓库。构建/测试流程会校验生成的代码类型，而 ESLint 会自动忽略生成的代码以保留原始格式。
+## 加载到现有宿主
 
----
+`inject = ['webServer']` 确保宿主服务准备就绪才激活；Cordis effect 在禁用/卸载插件时自动移除全部路由。
 
-## 🚀 运行与加载 (DSH)
+若宿主已运行，按现有 loader 流程加载 [patch](<cordis.patch.yml>)，不要启动第二份 server。首次启动宿主可在 playground 目录执行 `pnpm dev:dsh`（需要 dsh CLI）。这不是插件独立服务器。
 
-确保已安装 `dsh` CLI 工具，随后在**仓库根目录**启动 Web Profile：
+## 请求检查
+
+仅在现有宿主已加载插件后执行，端口按实际宿主修改：
 
 ```sh
-dsh web --patch ./cordis.patch.yml
+curl http://127.0.0.1:3080/api/health
+# {"status":"ok","uptimeMs":...}
+
+curl http://127.0.0.1:3080/api/server
+# {"port":3080}
+
+curl 'http://127.0.0.1:3080/api/inspect?query=1'
+# {"method":"GET","path":"/api/inspect","query":{"query":"1"}}
+
+curl 'http://127.0.0.1:3080/api/echo/demo?pretty=true&limit=2'
+# native schema 解码后的 pretty: true、limit: 2
+
+curl -X POST 'http://127.0.0.1:3080/api/echo/demo?limit=2' \
+  -H 'content-type: application/json' \
+  -d '{"message":"hello","tags":["example"]}'
+# JSON body 原样出现在响应 body 中
+
+curl -X POST http://127.0.0.1:3080/api/health
+# 405，带 allow 响应头
 ```
 
-* **依赖注入保障**：`inject = ['webServer']` 确保仅在宿主 `webServer` 准备就绪后才激活插件。
-* **卸载机制**：当禁用或卸载该 Loader 条目时，Cordis Effect 将自动移除全部已注册路由。
-* ⚠️ **重载建议**：如果 DSH 已在运行，请携带 `--patch` 重启服务，避免在同一端口重复启动多份实例。
+加载前确认 `/api/*` 未被占用；若冲突，调整服务入口路径并重新生成 API。示例是诊断接口；生产敏感功能必须补齐鉴权 hooks 与请求体大小限制。schema 验证不替代鉴权。
 
----
+## English summary
 
-## 🧪 试用验证
-
-启动后，可通过 `curl` 进行响应测试（端口请以实际宿主输出为准）：
-
-```sh
-# 1. 字符串路径精确匹配
-curl [http://127.0.0.1:3080/api/health](http://127.0.0.1:3080/api/health)
-# 响应: {"status":"ok","uptimeMs":...}
-
-# 2. H3 静态字符串路径 /api/server（宿主推导为 exact）
-curl [http://127.0.0.1:3080/api/server](http://127.0.0.1:3080/api/server)
-# 响应: {"port":3080}
-
-# 3. H3 通配符 /api/inspect/**（宿主推导为 prefix，子路径需直接请求，不由 GenAPI 枚举）
-curl '[http://127.0.0.1:3080/api/inspect/request?query=1](http://127.0.0.1:3080/api/inspect/request?query=1)'
-# 响应: {"method":"GET","path":"/api/inspect/request","query":{"query":"1"}}
-
-# 4. 未允许的方法默认返回 405
-curl -X POST [http://127.0.0.1:3080/api/health](http://127.0.0.1:3080/api/health)
-# 响应: 405 Method Not Allowed
-```
-
-> ⚠️ **注意事项**：
-> 1. 加载前请确认 `/api/*` 路由未被宿主或其他插件占用。如遇冲突，请在服务器入口修改路径并重新生成 API。
-> 2. 诊断端点未配置应用层鉴权与请求体限制；在扩展为生产级敏感接口前，请补充鉴权中间件与请求体大小限制。
-
----
+This host-only plugin uses native Elysia context, `t.Object` query/body route schemas, JSON object returns, and activation helpers. Build the package, generate the client through `dsh-elysia/genapi`, then typecheck/build playground. Load it into the existing Node.js host with the Cordis patch; never start another server. Generated clients cover exact paths and required `:channel` parameters. Regenerate rather than hand-editing output. The curl commands are instructions, not claims of verified host responses.

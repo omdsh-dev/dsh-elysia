@@ -2,17 +2,29 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
-import type { H3Route } from 'h3'
+import type { AnyElysia } from 'elysia'
+import type { RequestListener } from 'node:http'
 import { ServerResponse } from 'node:http'
-import { H3 } from 'h3'
-import { toNodeHandler } from 'h3/node'
+import { node } from '@elysiajs/node'
+import { Elysia } from 'elysia'
+import { toNodeHandler } from 'srvx/node'
 
-/** 每次激活的 Cordis 服务实例，供请求上下文访问。 */
-
+/** Cordis service and options belonging to one activation. */
 export interface HostServiceInstance<Options = undefined> {
   context: Context
   options: Options
 }
+
+export interface HostContext<Options = undefined> {
+  __host_instance: HostServiceInstance<Options>
+}
+
+export type HostApp<Options = undefined> = Elysia<'', {
+  decorator: { __host_instance: HostServiceInstance<Options> }
+  store: Record<never, never>
+  derive: Record<never, never>
+  resolve: Record<never, never>
+}>
 
 export type HostService<Options = undefined> = (undefined extends Options
   ? (ctx: Context, options?: Options) => () => void
@@ -20,151 +32,123 @@ export type HostService<Options = undefined> = (undefined extends Options
     __host_instance?: HostServiceInstance<Options>
   }
 
-// ============================================================================
-// 常量与预编译正则 (Constants)
-// ============================================================================
+const DYNAMIC_ROUTE_RE = /\/[^/]*[:*]/
 
-/** 匹配动态路由参数的正则前缀位置 */
-const DYNAMIC_ROUTE_RE = /\/[^/]*[:*({]/
-
-/** 将原生 H3 路由注册到宿主 WebServer，并返回每次激活的卸载函数。 */
-
-export function defineWebServer<Options = undefined>(setup: (app: H3) => void | H3): HostService<Options> {
+/** Register native Elysia routes on the existing host, without listening. */
+export function defineWebServer<Options = undefined>(setup: (app: HostApp<Options>) => void | AnyElysia): HostService<Options> {
   if (typeof setup !== 'function')
-    throw new TypeError('dsh-h3: defineWebServer requires a setup callback')
+    throw new TypeError('dsh-elysia: defineWebServer requires a setup callback')
 
   const server = function (ctx: Context, options?: Options): () => void {
     const webServer = ctx?.webServer
-    if (typeof webServer?.register !== 'function') {
-      throw new TypeError('dsh-h3: server(ctx) requires the webServer service')
-    }
+    if (typeof webServer?.register !== 'function')
+      throw new TypeError('dsh-elysia: server(ctx) requires the webServer service')
 
     const instance: HostServiceInstance<Options> = { context: ctx, options: options as Options }
-    const app = new H3()
-
-    // 绑定当前服务实例到请求上下文
-    app.use((event) => {
-      event.context.__host_instance = instance
-    })
-
+    const app = new Elysia({ adapter: node() }).decorate('__host_instance', instance)
     const result = setup(app)
-    if (result !== undefined && result !== app) {
-      throw new TypeError('dsh-h3: setup must be synchronous and return nothing or the app')
-    }
+    if (result !== undefined && result !== app)
+      throw new TypeError('dsh-elysia: setup must be synchronous and return nothing or the app')
+    if (app.modules.size)
+      throw new TypeError('dsh-elysia: asynchronous plugins are not supported; register native plugins synchronously')
 
-    // 按宿主路由分组整理已注册的 H3 路由
-    const groups = new Map<string, { route: Omit<WebRoute, 'handler'>, methods: Set<string>, routes: H3Route[] }>()
-    for (const h3Route of app['~routes']) {
-      const route = hostRouteOf(h3Route.route!)
+    const groups = new Map<string, { route: Omit<WebRoute, 'handler'>, routes: typeof app.routes }>()
+    for (const nativeRoute of app.routes) {
+      const route = hostRouteOf(nativeRoute.path)
       const key = `${route.kind}\0${route.path}`
-
       let group = groups.get(key)
       if (!group) {
-        group = { route, methods: new Set(), routes: [] }
+        group = { route, routes: [] }
         groups.set(key, group)
       }
-      group.methods.add(h3Route.method ?? '')
-      group.routes.push(h3Route)
+      group.routes.push(nativeRoute)
     }
 
     const disposers: Array<() => void> = []
     const dispose = (): void => {
-      // 倒序卸载服务
-      for (const unregister of disposers.splice(0).reverse()) {
+      for (const unregister of disposers.splice(0).reverse())
         unregister()
-      }
-      if (server.__host_instance === instance) {
+      if (server.__host_instance === instance)
         delete server.__host_instance
-      }
     }
 
     try {
-      for (const { route, methods, routes } of groups.values()) {
-        // 宿主接管路径优先级：隔离 H3 避免 HEAD / all / patterns 溢出作用域
-        const routedApp = new H3({ ...app.config, plugins: undefined })
-        routedApp['~middleware'] = app['~middleware']
-
-        for (const h3Route of routes) {
-          routedApp['~addRoute'](h3Route)
+      for (const { route, routes } of groups.values()) {
+        // Elysia 1.4's WebStandard dynamic HEAD fallback precedes explicit HEAD.
+        // We register HEAD per pattern below; Node itself suppresses its body.
+        const routedApp = new Elysia({ ...app.config, prefix: '', adapter: { ...node(), isWebStandard: false } })
+        // ponytail: Elysia 1.4 internal resource sharing; replace with a native
+        // scoped-router export if upstream provides one. Never share routers.
+        // Route hooks already include inherited lifecycle and validators.
+        // eslint-disable-next-line dot-notation -- protected Elysia activation resources
+        routedApp['singleton'] = app['singleton']
+        // eslint-disable-next-line dot-notation -- protected Elysia activation resources
+        routedApp['definitions'] = app['definitions']
+        // eslint-disable-next-line dot-notation -- protected Elysia activation resources
+        routedApp['extender'] = app['extender']
+        routedApp['~parser'] = app['~parser']
+        // eslint-disable-next-line dot-notation -- protected Elysia activation resources
+        routedApp.headers(app['setHeaders'])
+        const methods = new Set(routes.map(route => route.method))
+        for (const nativeRoute of routes) {
+          routedApp.route(nativeRoute.method, nativeRoute.path, nativeRoute.handler, nativeRoute.hooks)
+          if (nativeRoute.method === 'GET' && !routes.some(route => route.method === 'HEAD' && route.path === nativeRoute.path))
+            routedApp.route('HEAD', nativeRoute.path, nativeRoute.handler, nativeRoute.hooks)
         }
-
-        const handler = toNodeHandler(routedApp)
-        const dispose = webServer.register({
+        routedApp.event = app.event
+        const handler = toNodeHandler(routedApp.fetch) as RequestListener
+        disposers.push(webServer.register({
           ...route,
           handler: async (req, res) => {
             const method = req.method ?? 'GET'
-
-            // 检查请求方法是否被允许
-            if (!methods.has('') && !methods.has(method) && !(method === 'HEAD' && methods.has('GET'))) {
+            if (!methods.has('ALL') && !methods.has(method) && !(method === 'HEAD' && methods.has('GET'))) {
               const allowed = new Set(methods)
-              if (allowed.has('GET')) {
+              if (allowed.has('GET'))
                 allowed.add('HEAD')
-              }
               res.writeHead(405, { allow: [...allowed].join(', ') })
               res.end()
               return
             }
-
-            // 修正部分中间件导致的 res.end 回调缺失问题
             patchResponseEnd(res)
             await handler(req, res)
           },
-        })
-        disposers.push(dispose)
+        }))
       }
     }
     catch (error) {
       dispose()
       throw error
     }
-
     server.__host_instance = instance
     return dispose
   } as HostService<Options>
-
   return server
 }
 
-// ============================================================================
-// 辅助函数 (Helper Functions)
-// ============================================================================
-
-/**
- * 确保响应对象的 res.end 能在 finish 事件后正确触发回调
- */
+/** compression's res.end drops callbacks and treats end(callback) as a body. */
 function patchResponseEnd(res: ServerResponse): void {
   const originalEnd = res.end
   res.end = function (chunk?: string | Uint8Array | (() => void), encoding?: BufferEncoding | (() => void), callback?: () => void) {
     const done = typeof chunk === 'function' ? chunk : typeof encoding === 'function' ? encoding : callback
-    const chunkData = typeof chunk === 'function' ? undefined : chunk
-    const encodingStr = typeof encoding === 'string' ? encoding : 'utf8'
-
+    const data = typeof chunk === 'function' ? undefined : chunk
+    const charset = typeof encoding === 'string' ? encoding : 'utf8'
     if (this.writableEnded)
-      return ServerResponse.prototype.end.call(this, chunkData, encodingStr, done)
-
+      return ServerResponse.prototype.end.call(this, data, charset, done)
     if (done)
       this.once('finish', done)
-
-    return originalEnd.call(this, chunkData, encodingStr)
+    return originalEnd.call(this, data, charset)
   }
 }
 
-/** 从 H3 pattern 推导并校验宿主路由规则。 */
 function hostRouteOf(pattern: string): Omit<WebRoute, 'handler'> {
   const dynamicIndex = pattern.search(DYNAMIC_ROUTE_RE)
-
-  if (dynamicIndex === 0) {
-    throw new TypeError('dsh-h3: root-level patterns need a WebServer fallback; use a static prefix for named routes')
-  }
-
+  if (dynamicIndex === 0)
+    throw new TypeError('dsh-elysia: root-level patterns need a WebServer fallback; use a static prefix for named routes')
   const kind = dynamicIndex < 0 ? 'exact' : 'prefix'
   const path = dynamicIndex < 0
     ? pattern === '/' ? pattern : pattern.replace(/\/$/, '')
     : pattern.slice(0, dynamicIndex)
-
-  if (!path.startsWith('/') || path.startsWith('//') || (path !== '/' && path.endsWith('/')) || /[?#\\]/.test(path) || new URL(path, 'http://localhost').pathname !== path) {
-    throw new TypeError('dsh-h3: route path must be an absolute pathname without a trailing slash')
-  }
-
-  return { kind, path }
+  if (!path.startsWith('/') || path.startsWith('//') || (path !== '/' && path.endsWith('/')) || /[?#\\]/.test(path) || new URL(path, 'http://localhost').pathname !== encodeURI(path).replace(/%25([\dA-F]{2})/gi, '%$1'))
+    throw new TypeError('dsh-elysia: route path must be an absolute pathname without a trailing slash')
+  return { kind, path: new URL(path, 'http://localhost').pathname }
 }

@@ -1,5 +1,5 @@
-import { defineWebServer } from 'dsh-h3'
+import { defineWebServer } from 'dsh-elysia'
 
 export const server = defineWebServer((app) => {
-  app.use(() => ({ middleware: true }))
+  app.onRequest(() => undefined)
 })

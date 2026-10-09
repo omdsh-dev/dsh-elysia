@@ -1,4 +1,4 @@
-import { defineWebServer } from 'dsh-h3'
+import { defineWebServer } from 'dsh-elysia'
 import defaultHandler, { functionHandler, namedHandler } from './shared-handlers'
 
 export const server = defineWebServer((app) => {

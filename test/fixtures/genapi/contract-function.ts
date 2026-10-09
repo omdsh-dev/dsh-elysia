@@ -1,7 +1,6 @@
-import { defineWebServer } from 'dsh-h3'
-import { defineEventHandler } from 'h3'
+import { defineWebServer } from 'dsh-elysia'
 
-const handler = defineEventHandler(() => ({ onClick: () => 1 }))
+const handler = (): { onClick: () => number } => ({ onClick: () => 1 })
 
 export const server = defineWebServer((app) => {
   app.get('/api/function-contract', handler)

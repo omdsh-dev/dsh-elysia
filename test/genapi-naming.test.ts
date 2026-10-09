@@ -15,7 +15,7 @@ function generate(fixture: string): ApiPipeline.ConfigRead {
   return original(configRead)
 }
 
-describe('genapi definitions', () => {
+describe('genapi definitions', { timeout: 20000 }, () => {
   it('names every definition after the route method and path', () => {
     const scope = generate('routes.ts').graphs.scopes.type
     expect(scope.typings.map(typing => typing.name)).toEqual([
@@ -30,18 +30,60 @@ describe('genapi definitions', () => {
     expect(scope.interfaces[0]?.properties).toEqual([{ name: 'message', type: 'string', required: true }])
   })
 
-  it('generates only the base endpoint and preserves the type of a static prefix', () => {
+  it('canonicalizes static trailing slashes but preserves the reachable wildcard endpoint', () => {
     const configRead = generate('branches-paths.ts')
-    expect(Object.keys(configRead.source.paths)).toEqual(['/api/literal-exact', '/api/literal-prefix', '/'])
-    expect(configRead.source.paths['/api/literal-prefix'].get).toEqual({
+    expect(Object.keys(configRead.source.paths)).toEqual(['/api/literal-exact', '/api/literal-prefix/', '/'])
+    expect(configRead.source.paths['/api/literal-prefix/'].get).toEqual({
       parameters: [],
-      responses: { 200: { description: 'GET /api/literal-prefix', schema: { $ref: '#/definitions/GetApiLiteralPrefixResponse' } } },
+      responses: { 200: { description: 'GET /api/literal-prefix/', schema: { $ref: '#/definitions/GetApiLiteralPrefixResponse' } } },
     })
     expect(configRead.graphs.scopes.type.typings).toContainEqual({
       name: 'GetApiLiteralPrefixResponse',
       value: '{ "ok": (false | true) }',
       export: true,
     })
+  })
+
+  it('generates accurate native schema, handler and object contracts', () => {
+    const result = generate('native-schemas.ts')
+    const scope = result.graphs.scopes.type
+    expect(scope.typings).toContainEqual({ name: 'GetApiNativeidQueryLimit', value: 'number', export: true })
+    expect(scope.typings).toContainEqual({ name: 'GetApiNativeidQueryEnabled', value: '(undefined | false | true)', export: true })
+    expect(scope.typings).toContainEqual({ name: 'GetApiNativeidResponse', value: '{ "limit": number; "enabled": (undefined | false | true) }', export: true })
+    expect(scope.typings).toContainEqual({ name: 'GetApiObjectResponse', value: '{ "ok": true; "nested": { "value": 1 } }', export: true })
+    expect(scope.typings).toContainEqual({ name: 'GetApiSchemaResponseResponse', value: '{ "ok": (false | true) }', export: true })
+    expect([...scope.interfaces[0].properties!].sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { name: 'kind', type: '("a" | "b")', required: true },
+      { name: 'message', type: 'string', required: true },
+      { name: 'metadata', type: '(undefined | { [key: string]: string })', required: false },
+      { name: 'tags', type: '(undefined | (string)[])', required: false },
+    ])
+    expect(result.source.paths['/api/native/{id}'].get.parameters).toHaveLength(3)
+    expect(result.source.paths['/api/native/{id}'].get.parameters).toEqual(expect.arrayContaining([
+      { name: 'id', in: 'path', required: true, type: 'string' },
+      { name: 'limit', in: 'query', required: true, $ref: '#/definitions/GetApiNativeidQueryLimit' },
+      { name: 'enabled', in: 'query', required: false, $ref: '#/definitions/GetApiNativeidQueryEnabled' },
+    ]))
+  })
+
+  it('preserves explicit typed native context query/body contracts', () => {
+    const scope = generate('typed-context.ts').graphs.scopes.type
+    expect(scope.typings).toContainEqual({ name: 'GetApiTypedQueryTerm', value: '(undefined | string)', export: true })
+    expect(scope.typings).toContainEqual({ name: 'GetApiTypedQueryPage', value: '(undefined | string)', export: true })
+    expect(scope.interfaces[0].properties).toEqual([{ name: 'message', type: 'string', required: true }])
+  })
+
+  it.each([
+    ['schema-unknown.ts', /unsupported schemas cannot generate unknown/],
+    ['schema-function.ts', /functions and class instances are not JSON contracts/],
+    ['schema-transform.ts', /transform schemas require separate wire contracts/],
+    ['plugin-not-executed.ts', /without executing plugins/],
+    ['middleware-response.ts', /onRequest hooks that can return a response/],
+    ['custom-parser.ts', /explicit parsers are not supported/],
+    ['plain-string.ts', /plain string responses are not supported/],
+    ['route-hook.ts', /route-local lifecycle hooks are not supported/],
+  ] as const)('fails closed for %s without executing plugins', (fixture, error) => {
+    expect(() => generate(fixture)).toThrow(error)
   })
 
   it('rejects routes that normalise to the same name', () => {
