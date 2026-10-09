@@ -1,7 +1,7 @@
 {
   "name": "dsh-elysia",
   "type": "module",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packageManager": "pnpm@12.8.1",
   "description": "Elysia route services for the DeepSeek Harness WebServer and Cordis lifecycle",
   "author": "Anthony Fu <anthonyfu117@hotmail.com>",
