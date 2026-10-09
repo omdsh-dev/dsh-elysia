@@ -7,7 +7,7 @@
 [![coverage][coverage-src]][coverage-href]
 [![License][license-src]][license-href]
 
-⚡️ **dsh-elysia** provides native Elysia route services for DeepSeek Harness plugin authors, with registration and disposal managed by Cordis. It runs on the existing Node.js host: no Bun and no additional server.
+✨ **dsh-elysia** integrates [Elysia](<https://elysiajs.com/>) into the DeepSeek Harness plugin host. Elysia is an ergonomic, type-safe Web framework with schema-driven request validation and type inference. Cordis manages registration and disposal. It runs on the existing Node.js host: no Bun and no additional server.
 
 [中文](<README.md>)
 

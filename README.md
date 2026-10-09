@@ -7,7 +7,7 @@
 [![coverage][coverage-src]][coverage-href]
 [![License][license-src]][license-href]
 
-⚡️ **dsh-elysia** 为 DeepSeek Harness 插件作者提供原生 Elysia 路由服务，通过 Cordis 管理注册与卸载。使用现有 Node.js 宿主，不需要 Bun，不启动额外服务器。
+✨ **dsh-elysia** 为 DeepSeek Harness 插件 host 集成 [Elysia](<https://elysiajs.com/>)——注重开发体验与类型安全的 Web 框架，以 schema 驱动请求验证和类型推导，通过 Cordis 管理注册与卸载。使用现有 Node.js 宿主，不需要 Bun，不启动额外服务器。
 
 [English](<README.en.md>)
 
